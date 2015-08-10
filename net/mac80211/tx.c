@@ -664,6 +664,9 @@ ieee80211_tx_h_rate_ctrl(struct ieee80211_tx_data *tx)
 	struct ieee80211_sta_rates *ratetbl = NULL;
 	bool assoc = false;
 
+  if (info->control.fixed_rate)
+    return TX_CONTINUE;
+
 	memset(&txrc, 0, sizeof(txrc));
 
 	sband = tx->local->hw.wiphy->bands[info->band];
@@ -1359,7 +1362,7 @@ static int invoke_tx_handlers(struct ieee80211_tx_data *tx)
 	CALL_TXH(ieee80211_tx_h_check_control_port_protocol);
 	CALL_TXH(ieee80211_tx_h_select_key);
 	if (!(tx->local->hw.flags & IEEE80211_HW_HAS_RATE_CONTROL))
-		CALL_TXH(ieee80211_tx_h_rate_ctrl);
+		  CALL_TXH(ieee80211_tx_h_rate_ctrl);
 
 	if (unlikely(info->flags & IEEE80211_TX_INTFL_RETRANSMISSION)) {
 		__skb_queue_tail(&tx->skbs, tx->skb);
@@ -1536,7 +1539,8 @@ void ieee80211_xmit(struct ieee80211_sub_if_data *sdata, struct sk_buff *skb)
 	ieee80211_tx(sdata, skb, false);
 }
 
-static bool ieee80211_parse_tx_radiotap(struct sk_buff *skb)
+static bool ieee80211_parse_tx_radiotap(struct sk_buff *skb, 
+    struct ieee80211_local *local)
 {
 	struct ieee80211_radiotap_iterator iterator;
 	struct ieee80211_radiotap_header *rthdr =
@@ -1544,10 +1548,19 @@ static bool ieee80211_parse_tx_radiotap(struct sk_buff *skb)
 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
 	int ret = ieee80211_radiotap_iterator_init(&iterator, rthdr, skb->len,
 						   NULL);
+  struct ieee80211_channel *chan = local->monitor_chandef.chan;
+  struct ieee80211_supported_band *sband = 
+    local->hw.wiphy->bands[chan->band];
 	u16 txflags;
+  u8 fields, flags, index;
+  int rate_idx;
+  int bit_rate;
+  int i;
 
 	info->flags |= IEEE80211_TX_INTFL_DONT_ENCRYPT |
 		       IEEE80211_TX_CTL_DONTFRAG;
+
+  info->control.fixed_rate = 0;
 
 	/*
 	 * for every radiotap entry that is present
@@ -1594,6 +1607,58 @@ static bool ieee80211_parse_tx_radiotap(struct sk_buff *skb)
 			if (txflags & IEEE80211_RADIOTAP_F_TX_NOACK)
 				info->flags |= IEEE80211_TX_CTL_NO_ACK;
 			break;
+
+    /* 802.11a/b/g bitrates */
+    case IEEE80211_RADIOTAP_RATE:
+      rate_idx =-1;
+      /* convert legacy rate; NB: .5 Mb/s -> 100 kb/s */
+      bit_rate =*iterator.this_arg * 5;
+      for (i =0; i < sband->n_bitrates; i++){
+        if (sband->bitrates[i].bitrate == bit_rate) {
+          rate_idx =i;
+          break;
+        }
+      }
+      /* Couldn't find a rate */
+      if (rate_idx < 0)
+        return false;
+
+      info->control.fixed_rate = 1;
+      info->control.rates[0].idx = rate_idx;
+      info->control.rates[0].count = 1;
+      break;
+
+    case IEEE80211_RADIOTAP_MCS:
+      fields = *iterator.this_arg;
+      flags = *(iterator.this_arg+1);
+      index = *(iterator.this_arg+2);
+
+      if (fields & IEEE80211_RADIOTAP_MCS_HAVE_BW) {
+        if ((flags & IEEE80211_RADIOTAP_MCS_BW_MASK) == IEEE80211_RADIOTAP_MCS_BW_40)
+          info->control.rates[0].flags |= IEEE80211_TX_RC_40_MHZ_WIDTH;
+      }
+
+      if (fields & IEEE80211_RADIOTAP_MCS_HAVE_MCS) {
+        info->control.fixed_rate = 1;
+        info->control.rates[0].flags |= IEEE80211_TX_RC_MCS;
+        info->control.rates[0].idx = index;
+      }
+
+      if (fields & IEEE80211_RADIOTAP_MCS_HAVE_GI) {
+        if (flags & IEEE80211_RADIOTAP_MCS_SGI)
+          info->control.rates[0].flags |= IEEE80211_TX_RC_SHORT_GI;
+      }
+
+      if (fields & IEEE80211_RADIOTAP_MCS_HAVE_FEC) {
+        if (flags & IEEE80211_RADIOTAP_MCS_FEC_LDPC)
+          info->control.flags |= IEEE80211_TX_CTL_LDPC;
+      }
+      
+      if (fields & IEEE80211_RADIOTAP_MCS_HAVE_STBC) {
+        info->flags |= IEEE80211_TX_CTL_STBC;
+        //TODO: We should be able to set the number of spatial streams here.
+      }
+
 
 		/*
 		 * Please update the file
@@ -1690,7 +1755,7 @@ netdev_tx_t ieee80211_monitor_start_xmit(struct sk_buff *skb,
 		      IEEE80211_TX_CTL_INJECTED;
 
 	/* process and remove the injection radiotap header */
-	if (!ieee80211_parse_tx_radiotap(skb))
+	if (!ieee80211_parse_tx_radiotap(skb, local))
 		goto fail;
 
 	rcu_read_lock();
@@ -1749,9 +1814,13 @@ netdev_tx_t ieee80211_monitor_start_xmit(struct sk_buff *skb,
 	 * radar detection by itself. We can do that later by adding a
 	 * monitor flag interfaces used for AP support.
 	 */
+
+  /* Always allow beaconing */
+#if 0
 	if (!cfg80211_reg_can_beacon(local->hw.wiphy, chandef,
 				     sdata->vif.type))
 		goto fail_rcu;
+#endif
 
 	info->band = chandef->chan->band;
 	ieee80211_xmit(sdata, skb);

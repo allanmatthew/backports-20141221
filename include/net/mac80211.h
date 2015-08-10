@@ -724,6 +724,7 @@ struct ieee80211_tx_info {
 					u8 use_cts_prot:1;
 					u8 short_preamble:1;
 					u8 skip_table:1;
+          u8 fixed_rate:1;
 					/* 2 bytes free */
 				};
 				/* only needed before rate control */
