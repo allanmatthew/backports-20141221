@@ -1556,6 +1556,8 @@ static bool ieee80211_parse_tx_radiotap(struct sk_buff *skb,
   int rate_idx;
   int bit_rate;
   int i;
+  u16 channel;
+  u16 ch_flags;
 
 	info->flags |= IEEE80211_TX_INTFL_DONT_ENCRYPT |
 		       IEEE80211_TX_CTL_DONTFRAG;
@@ -1628,6 +1630,28 @@ static bool ieee80211_parse_tx_radiotap(struct sk_buff *skb,
       info->control.rates[0].count = 1;
       break;
 
+    /* Channel selection */
+    case IEEE80211_RADIOTAP_CHANNEL:
+      channel = get_unaligned_le16(iterator.this_arg);
+      ch_flags = get_unaligned_le16(iterator.this_arg+2);
+#if 0
+      if (ch_flags & IEEE80211_CHAN_OFDM) {
+      }
+
+      if (ch_flags & IEEE80211_CHAN_2GHZ) {
+      }
+      
+      if (ch_flags & IEEE80211_CHAN_5GHZ) {
+      }
+
+      if (ch_flags & IEEE80211_CHAN_HALF) {
+      }
+
+      if (ch_flags & IEEE80211_CHAN_QUARTER) {
+      }
+#endif
+      break;
+
     case IEEE80211_RADIOTAP_MCS:
       fields = *iterator.this_arg;
       flags = *(iterator.this_arg+1);
@@ -1642,6 +1666,13 @@ static bool ieee80211_parse_tx_radiotap(struct sk_buff *skb,
         info->control.fixed_rate = 1;
         info->control.rates[0].flags |= IEEE80211_TX_RC_MCS;
         info->control.rates[0].idx = index;
+        info->control.rates[0].count = 1;
+
+        for (i=1; i<IEEE80211_TX_MAX_RATES; ++i) {
+          info->control.rates[i].idx = -1;
+          info->control.rates[i].count = 0;
+          info->control.rates[i].flags = 0;
+        }
       }
 
       if (fields & IEEE80211_RADIOTAP_MCS_HAVE_GI) {
@@ -1651,14 +1682,17 @@ static bool ieee80211_parse_tx_radiotap(struct sk_buff *skb,
 
       if (fields & IEEE80211_RADIOTAP_MCS_HAVE_FEC) {
         if (flags & IEEE80211_RADIOTAP_MCS_FEC_LDPC)
-          info->control.flags |= IEEE80211_TX_CTL_LDPC;
+          info->flags |= IEEE80211_TX_CTL_LDPC;
       }
       
       if (fields & IEEE80211_RADIOTAP_MCS_HAVE_STBC) {
-        info->flags |= IEEE80211_TX_CTL_STBC;
-        //TODO: We should be able to set the number of spatial streams here.
+        if (flags & IEEE80211_RADIOTAP_MCS_STBC_MASK & IEEE80211_RADIOTAP_MCS_STBC_1)
+          info->flags |= (1 << IEEE80211_TX_CTL_STBC_SHIFT);
+        else if (flags & IEEE80211_RADIOTAP_MCS_STBC_MASK & IEEE80211_RADIOTAP_MCS_STBC_2)
+          info->flags |= (2 << IEEE80211_TX_CTL_STBC_SHIFT);
+        else if (flags & IEEE80211_RADIOTAP_MCS_STBC_MASK & IEEE80211_RADIOTAP_MCS_STBC_3)
+          info->flags |= (3 << IEEE80211_TX_CTL_STBC_SHIFT);
       }
-
 
 		/*
 		 * Please update the file
